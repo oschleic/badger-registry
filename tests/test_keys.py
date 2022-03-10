@@ -10,14 +10,16 @@ def test_key_permissions(registry, rando):
 def test_add_read_key(registry, gov):
     registry.set(
         "controller", "0x63cF44B2548e4493Fd099222A1eC79F3344D9682", {"from": gov})
-    assert registry.get(
+    assert registry.getAddress(
         "controller") == "0x63cF44B2548e4493Fd099222A1eC79F3344D9682"
-    assert registry.keysCount() == 1
+    assert registry.getKey(
+        "0x63cF44B2548e4493Fd099222A1eC79F3344D9682") == "controller"
 
 
 def test_delete_key(registry, gov):
     registry.set(
         "controller", "0x63cF44B2548e4493Fd099222A1eC79F3344D9682", {"from": gov})
     registry.deleteKey("controller",  {"from": gov})
-    assert registry.get("controller") == ZERO_ADDRESS
-    assert registry.keysCount() == 0
+    assert registry.getAddress("controller") == ZERO_ADDRESS
+    assert registry.getKey(
+        "0x63cF44B2548e4493Fd099222A1eC79F3344D9682") == ""

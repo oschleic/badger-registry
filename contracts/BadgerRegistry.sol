@@ -9,7 +9,7 @@ contract BadgerRegistry {
   using EnumerableSet for EnumerableSet.AddressSet;
 
   //@dev is the vault at the experimental, guarded or open stage? Only for Prod Vaults
-  enum VaultStatus { experimental, guarded, open }
+  enum VaultStatus { experimental, guarded, open, deprecated }
 
   struct VaultData {
     string version;
@@ -20,16 +20,18 @@ contract BadgerRegistry {
   //@dev Multisig. Vaults from here are considered Production ready
   address public governance;
   address public devGovernance; //@notice an address with some powers to make things easier in development
+  address public strategistGuild;
 
   //@dev Given an Author Address, and Token, Return the Vault
   mapping(address => mapping(string => EnumerableSet.AddressSet)) private vaults;
+  mapping(address => string) private metadata;
   mapping(string => address) public addresses;
+  mapping(address => string) public keys;
 
   //@dev Given Version and VaultStatus, returns the list of Vaults in production
   mapping(string => mapping(VaultStatus => EnumerableSet.AddressSet)) private productionVaults;
 
   // Known constants you can use
-  string[] public keys; //@notice, you don't have a guarantee of the key being there, it's just a utility
   string[] public versions; //@notice, you don't have a guarantee of the key being there, it's just a utility
 
   event NewVault(address author, string version, address vault);
@@ -41,6 +43,12 @@ contract BadgerRegistry {
   event AddKey(string key);
   event DeleteKey(string key);
   event AddVersion(string version);
+
+
+  function setStrategeistGuild(address newStrategistGuild) public {
+    require(msg.sender == governance, "!gov");
+    strategistGuild = newStrategistGuild;
+  }
 
   function initialize(address newGovernance) public {
     require(governance == address(0));
@@ -72,9 +80,10 @@ contract BadgerRegistry {
 
 
   //@dev Anyone can add a vault to here, it will be indexed by their address
-  function add(string memory version, address vault) public {
+  function add(string memory version, address vault, string memory data) public {
     bool added = vaults[msg.sender][version].add(vault);
     if (added) {
+      metadata[vault] = data;
       emit NewVault(msg.sender, version, vault);
     }
   }
@@ -83,14 +92,15 @@ contract BadgerRegistry {
   function remove(string memory version, address vault) public {
     bool removed = vaults[msg.sender][version].remove(vault);
     if (removed) {
+      delete metadata[vault]; //Does this need to be removed?
       emit RemoveVault(msg.sender, version, vault);
      }
   }
 
   //@dev Promote a vault to Production
   //@dev Promote just means indexed by the Governance Address
-  function promote(string memory version, address vault, VaultStatus status) public {
-    require(msg.sender == governance || msg.sender == devGovernance, "!gov");
+  function promote(string memory version, address vault, VaultStatus status, string memory data) public {
+    require(msg.sender == governance || msg.sender == devGovernance || msg.sender == strategistGuild, "!gov");
 
     VaultStatus actualStatus = status;
     if(msg.sender == devGovernance) {
@@ -101,7 +111,14 @@ contract BadgerRegistry {
 
     // If added remove from old and emit event
     if (added) {
+      metadata[vault] = data;
       // also remove from old prod
+      if(uint256(actualStatus) == 3){
+        // Remove from prev3
+        productionVaults[version][VaultStatus(0)].remove(vault);
+        productionVaults[version][VaultStatus(1)].remove(vault);
+        productionVaults[version][VaultStatus(2)].remove(vault);
+      }
       if(uint256(actualStatus) == 2){
         // Remove from prev2
         productionVaults[version][VaultStatus(0)].remove(vault);
@@ -137,88 +154,71 @@ contract BadgerRegistry {
   //@notice e.g. controller = 0x123123
   function set(string memory key, address at) public {
     require(msg.sender == governance, "!gov");
-    _addKey(key);
     addresses[key] = at;
+    keys[at] = key;
     emit Set(key, at);
   }
 
   //@dev Delete a key
   function deleteKey(string memory key) public {
     require(msg.sender == governance, "!gov");
-    for(uint256 x = 0; x < keys.length; x++){
-      // Compare strings via their hash because solidity
-      if(keccak256(bytes(key)) == keccak256(bytes(keys[x]))) {
-        delete addresses[key];
-        keys[x] = keys[keys.length - 1];
-        keys.pop();
-        emit DeleteKey(key);
-        return;
-      }
-    }
-
+    address keyAddress = addresses[key];
+    delete addresses[key];
+    delete keys[keyAddress];
+    emit DeleteKey(key);
   }
 
+
   //@dev Retrieve the value of a key
-  function get(string memory key) public view returns (address){
+  function getAddress(string memory key) public view returns (address){
     return addresses[key];
   }
 
-  //@dev Get keys count
-  function keysCount() public view returns (uint256){
-    return keys.length;
+  //@dev Retrieve the key from the address
+  function getKey(address keyAddress) public view returns (string memory){
+    return keys[keyAddress];
   }
 
-  //@dev Add a key to the list of keys
-  //@notice This is used to make it easier to discover keys,
-  //@notice however you have no guarantee that all keys will be in the list
-  function _addKey(string memory key) internal {
-    //If we find the key, skip
-    for(uint256 x = 0; x < keys.length; x++){
-      // Compare strings via their hash because solidity
-      if(keccak256(bytes(key)) == keccak256(bytes(keys[x]))) {
-        return;
-      }
-    }
-
-    // Else let's add it and emit the event
-    keys.push(key);
-
-    emit AddKey(key);
-  }
-
-  //@dev Retrieve a list of all Vault Addresses from the given author
-  function getVaults(string memory version, address author) public view returns (address[] memory) {
+  //@dev Retrieve a list of all Vault Addresses from the given author along with metadata
+  function getVaults(string memory version, address author) public view returns (address[] memory, string[] memory) {
     uint256 length = vaults[author][version].length();
 
     address[] memory list = new address[](length);
+    string[] memory metadataList = new string[](length);
     for (uint256 i = 0; i < length; i++) {
       list[i] = vaults[author][version].at(i);
+      metadataList[i] = metadata[list[i]];
     }
-    return list;
+    return (list, metadataList);
   }
 
-  //@dev Retrieve a list of all Vaults that are in production, based on Version and Status
-  function getFilteredProductionVaults(string memory version, VaultStatus status) public view returns (address[] memory) {
+  //@dev Retrieve a list of all Vaults that are in production along with their metadata, based on Version and Status
+  function getFilteredProductionVaults(string memory version, VaultStatus status) public view returns (address[] memory, string[] memory) {
     uint256 length = productionVaults[version][status].length();
 
     address[] memory list = new address[](length);
+    string[] memory metadataList = new string[](length);
     for (uint256 i = 0; i < length; i++) {
       list[i] = productionVaults[version][status].at(i);
+      metadataList[i] = metadata[list[i]];
     }
-    return list;
+    return (list, metadataList);
   }
 
-  function getProductionVaults() public view returns (VaultData[] memory) {
+  function getProductionVaults() public view returns (VaultData[] memory, string[] memory) {
     uint256 versionsCount = versions.length;
 
     VaultData[] memory data = new VaultData[](versionsCount * 3);
+    string[] memory metadataList;
 
     for(uint256 x = 0; x < versionsCount; x++) {
       for(uint256 y = 0; y < 3; y++) {
         uint256 length = productionVaults[versions[x]][VaultStatus(y)].length();
         address[] memory list = new address[](length);
+        metadataList = new string[](length);
         for(uint256 z = 0; z < length; z++){
           list[z] = productionVaults[versions[x]][VaultStatus(y)].at(z);
+          metadataList[z] = metadata[list[z]];
         }
         data[x * (versionsCount - 1) + y * 2] = VaultData({
           version: versions[x],
@@ -228,6 +228,6 @@ contract BadgerRegistry {
       }
     }
 
-    return data;
+    return (data, metadataList);
   }
 }

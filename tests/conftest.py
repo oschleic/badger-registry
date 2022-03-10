@@ -15,6 +15,10 @@ def gov(accounts):
   return accounts[0]
 
 @pytest.fixture
+def guild(accounts):
+  return accounts[1]
+
+@pytest.fixture
 def registry(gov, BadgerRegistry):
     registry = gov.deploy(BadgerRegistry)
     registry.initialize(gov)
